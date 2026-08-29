@@ -1,12 +1,8 @@
-# Settlement Feasibility & Fee Engine — Submission Notes
+# Settlement Feasibility & Fee Engine — Solution
 
-`README.md` is the original scaffold and is kept as-shipped, so its "Layout"
-section and setup instructions are now slightly out of date against the
-actual repo. This file is the up-to-date entry point: what's here, how to
-run it, and the write-up the task asks for (approach, shape interpretation,
-assumptions, edge cases, and why it's correct). For a short, plain-language
-walkthrough of how the algorithm and data flow work, see
-**[ARCHITECTURE.md](./ARCHITECTURE.md)**.
+The full write-up: setup, approach, alternatives, assumptions, edge cases,
+why the solution is correct, and the implementation architecture.
+`README.md` has the quick orientation and points here for everything else.
 
 ## Setup & run
 
@@ -14,23 +10,14 @@ walkthrough of how the algorithm and data flow work, see
 pip install -r requirements.txt
 
 python run.py cases/case1_feasible_even   # evaluate a single case, prints the Result as JSON
-pytest -q                                  # 42 tests
+pytest -q                                  # 46 tests
 ```
 
-## Current layout
+---
 
-```
-feasibility/
-├── money.py, dates.py, models.py, loaders.py, output.py   # utilities, data model, JSON I/O, output contract
-├── shapes/       floors.py, validate.py, even.py, stepped.py   # payment-shape construction
-├── simulation/   ledger.py, fee_placement.py                    # ledger replay + front-loaded fee placement
-├── solve/        search.py, minima.py                            # k-search (Part 1), binary-search minima (Part 2)
-└── engine.py                                                       # evaluate_offer() — orchestration only
-cases/            four provided example cases
-tests/            46 tests across 6 files (see ARCHITECTURE.md for the module map)
-```
+## Submission
 
-## Approach and alternatives considered
+### Approach and alternatives considered
 
 The core idea: **fee front-loading is the only real optimization target**;
 the shape (even/staircase/balloon) is a side effect of which flags the
@@ -39,7 +26,7 @@ has one shape-construction function that both staircase and balloon reduce
 to (parameterized by whether the segment count is capped), one ledger
 simulator, one greedy fee-placement routine, and a brute-force search over
 the number of payments `k`. Full reasoning, including a construction bug
-caught before writing code, is in ARCHITECTURE.md.
+caught before writing code, is in the **Architecture** section below.
 
 Alternatives considered and rejected:
 - **A smarter (DP / pruned) search over `k`** instead of trying every value
@@ -76,7 +63,7 @@ Alternatives considered and rejected:
   design did this and it under-front-loads (caught by hand-tracing the
   spec's own worked example before writing any implementation code).
 
-## Shape interpretation (even / staircase / balloon)
+### Shape interpretation (even / staircase / balloon)
 
 For every shape, once the payment array is fixed, the **fee** on top is
 placed the same way: greedily, earliest date first — take as much fee as
@@ -117,7 +104,7 @@ fee placement to work with.
   token-pay cap and any tier that applies at its position, with no special
   case needed.
 
-## Assumptions
+### Assumptions
 
 1. The offer's balance field is read as `creditor_balance_cents` (matching
    the spec's intent to avoid colliding with the client's
@@ -125,7 +112,7 @@ fee placement to work with.
    `current_balance_cents` key for compatibility with existing fixtures.
 2. Ties among equally front-loaded `(k, shape)` candidates are broken toward
    the smallest `k`.
-3. The Part 2 lump sum is placed at `as_of_date + 1 day` (the earliest
+3. The lump sum (below) is placed at `as_of_date + 1 day` (the earliest
    modifiable date) rather than searched over every possible date — an
    earlier lump is always at least as useful as a later one of the same size.
 4. "Every future draft" (for the monthly increment) means every ledger entry
@@ -135,7 +122,7 @@ fee placement to work with.
    rather than spread across multiple elevated positions (the most
    front-loaded choice — see "Why this is correct" below).
 
-## Known edge cases / limitations
+### Known edge cases / limitations
 
 - If `first_payment_date` falls after the horizon (`last_draft_date`), no
   schedule can ever be placed — this is reported as infeasible with
@@ -149,14 +136,14 @@ fee placement to work with.
   remainder without becoming a second level) — this falls out of the
   generic validator, not special-cased.
 - The `k`-search itself is brute-force — every `k` from 1 to `k_upper`, no
-  pruning (see ARCHITECTURE.md for why that's the right call at realistic
-  sizes). It would need pruning or a smarter search if a creditor's
-  `max_payments` ever ran into the thousands.
+  pruning (see the **Architecture** section below for why that's the right
+  call at realistic sizes). It would need pruning or a smarter search if a
+  creditor's `max_payments` ever ran into the thousands.
 - A rare edge case (a creditor with more pricing tiers than `max_segments`
   allows) is where the greedy construction isn't provably optimal, though it
   still always finds a valid schedule — see the closing caveat below.
 
-## Why this is correct
+### Why this is correct
 
 Short version, meant for explaining out loud.
 
@@ -187,7 +174,7 @@ More cash on any date can only raise the balance from that point on, never
 lower it. So as the extra amount increases from 0, the answer flips from
 "not enough" to "enough" exactly once, never back and forth — exactly what
 binary search needs, and it lands on the exact cent where the flip happens,
-not an estimate. Same as Part 1, this is just repeated calls to a pure
+not an estimate. Same as above, this is just repeated calls to a pure
 feasibility check, so it's deterministic too.
 
 **One honest caveat.** In the rare edge case flagged above — a creditor
@@ -198,7 +185,7 @@ That fallback always produces *a* valid, working schedule, just not
 guaranteed to be the most front-loaded one possible in that one narrow
 scenario. Doesn't come up in any of the provided test cases.
 
-## Tests
+### Tests
 
 46 tests across `tests/test_smoke.py`, `test_cases.py` (the 4 provided
 cases), `test_shapes.py`, `test_ledger.py`, `test_fee_placement.py`, and
@@ -207,3 +194,130 @@ and tier floors, the `max_segments` cap, exact-sum, the date-by-date
 simulation (same-day ordering, a balance hitting exactly $0), the horizon
 limit, fee-before-first-payment compliance, and both Part 2 minima with
 their guardrails. Run with `pytest -q`.
+
+---
+
+## Architecture
+
+### The problem, in one line
+
+Given a client's account, a settlement offer, and a creditor's rules — build
+a payment schedule that never lets the account go negative and collects our
+fee as early as possible. If no schedule works, find the smallest amount of
+extra money that would fix it.
+
+### The approach, in 4 steps
+
+1. **Build a payment shape** for a chosen number of payments `k` — an array
+   that's non-decreasing, respects every minimum, and sums exactly to the
+   settlement amount. "Staircase" and "balloon" are the *same* construction;
+   balloon is just staircase with no cap on how many different payment
+   amounts it's allowed to use.
+2. **Replay the ledger** day by day (credits before debits) to check the
+   balance never goes negative.
+3. **Place the fee greedily** — for that fixed payment schedule, collect as
+   much fee as possible on the earliest date, then the next, and so on,
+   without ever risking a later date going negative.
+4. **Try every `k`** from 1 up to the max allowed, and keep whichever one
+   collects the fee earliest.
+
+If step 4 never finds a working option, binary-search for the smallest lump
+sum (or smallest monthly increase) that would make one exist — see "Part 2
+implementation" below.
+
+### Flow
+
+```
+client.json / offer.json / rules.json
+        │  parsed into Client / Offer / CreditorRules
+        ▼
+engine.evaluate_offer()
+        │
+        ▼
+solve/search.py — Part 1
+        │
+        │   for k = 1, 2, 3, ... up to k_max:
+        │       shapes/          build the payment array for this k
+        │       simulation/      check it against the ledger,
+        │                        place the fee as early as possible
+        │       keep the best (most front-loaded) k seen so far
+        │
+        ├── some k worked  ──────────────────────────► return that schedule
+        │
+        └── nothing worked
+                    │
+                    ▼
+            solve/minima.py — Part 2
+                    │
+                    │   binary-search the smallest lump sum
+                    │   binary-search the smallest monthly increase
+                    │   (both re-use the *same* "try every k" loop above,
+                    │    just with the extra money added to the ledger first)
+                    │
+                    ▼
+            apply guardrails ──────────────────────────► return both amounts
+```
+
+### Part 2 implementation: minimum extra funding
+
+When no `k` produces a working schedule, two numbers are computed
+independently:
+
+- **Minimum lump sum** — the smallest one-time deposit, placed on the
+  earliest possible date, that would make some `k` work.
+- **Minimum monthly increase** — the smallest amount added to *every* future
+  draft that would make some `k` work.
+
+**How:** binary search. `feasible_at(amount)` adds that much extra money to
+the ledger and re-runs the exact same "try every `k`" loop from Part 1 — but
+using a cheaper check: instead of front-loading the fee, just dump the
+*entire* fee on the very last possible date and see if the ledger still
+stays non-negative. That's the most forgiving placement possible, so it's
+the right question to ask when all you need is a yes/no answer.
+
+**Why binary search works here:** adding money never hurts — more cash on
+any date can only raise the balance from that point on, never lower it. So
+as the extra amount increases from `0`, the answer flips from "not enough"
+to "enough" exactly once, never back and forth. That's exactly the
+condition binary search needs, and it lands on the exact cent where the
+flip happens.
+
+**Guardrails:** both numbers are then checked against a cap (a lump sum
+above 65% of the settlement amount, or a monthly increase above the larger
+of a flat $100 or 40% of the draft amount, is rejected as unreasonable even
+if it would technically work).
+
+### Where the code lives
+
+```
+feasibility/
+├── money.py, dates.py, models.py, loaders.py, output.py   # utilities, data model, JSON I/O, output contract
+├── shapes/       floors.py, validate.py, even.py, stepped.py   # payment-shape construction
+├── simulation/   ledger.py, fee_placement.py                    # ledger replay + front-loaded fee placement
+├── solve/        search.py, minima.py                            # k-search (Part 1), binary-search minima (Part 2)
+└── engine.py                                                       # evaluate_offer() — orchestration only
+cases/            four provided example cases
+tests/            46 tests across 6 files
+```
+
+`solve/search.py`'s "try every `k`" loop is reused twice: once in full (front
+loading the fee) for Part 1, and once as a cheap yes/no check for Part 2's
+binary search — no separate feasibility algorithm exists.
+
+### Design choices worth knowing
+
+- **Floors computed once, not per-`k`.** A position's minimum payment
+  doesn't depend on `k`, so it's built once up to the max `k` and sliced,
+  instead of recomputed on every loop iteration.
+- **Fee placement is one pass, not one simulation per date.** Simulate the
+  ledger once with zero fee, take a running minimum from the end backward,
+  then walk forward taking as much fee as that minimum allows.
+- **Brute-force over `k`, on purpose.** The max number of payments is
+  always small in practice (tens, not thousands), so trying every `k` is
+  fast and trivially easy to verify — no need for anything cleverer.
+
+### Speed
+
+Roughly `O(k_max × number of ledger dates)` for the whole search — the cost
+is one ledger replay per candidate `k`. Never a real bottleneck at the
+sizes this problem actually has.

@@ -2,7 +2,7 @@
 
 Wires the pieces together — pick the first payment date, ask the solver for
 the best feasible schedule, and either report it or fall back to the Part 2
-minimum-funding search. See ARCHITECTURE.md for the full data-flow and
+minimum-funding search. See SOLUTION.md for the full data-flow and
 algorithm write-up.
 """
 

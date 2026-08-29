@@ -1,7 +1,10 @@
 # Settlement Feasibility & Fee Engine — Take-home
 
 Welcome, and thanks for taking the time. The full problem is in
-[`ASSIGNMENT.md`](./ASSIGNMENT.md). This README is just orientation.
+[`ASSIGNMENT.md`](./ASSIGNMENT.md). This README is just orientation — for
+the full write-up (approach, alternatives, assumptions, edge cases, why it's
+correct, and the implementation architecture), see
+[`SOLUTION.md`](./SOLUTION.md).
 
 ## The task in one line
 
@@ -19,19 +22,21 @@ pip install -r requirements.txt
 ## Layout
 
 ```
-hiring_takehome/
-├── ASSIGNMENT.md            # full specification — read this
+retape_ai_takehome/
+├── ASSIGNMENT.md            # full specification
+├── SOLUTION.md              # approach, alternatives, assumptions, architecture — start here
 ├── feasibility/
-│   ├── models.py            # data models, JSON loaders, date/EOM helpers (provided)
-│   └── engine.py            # >>> implement evaluate_offer here <<< (+ Result shape)
+│   ├── money.py, dates.py, models.py, loaders.py, output.py   # utilities, data model, JSON I/O
+│   ├── shapes/               # payment-shape construction (even / staircase / balloon)
+│   ├── simulation/           # ledger replay + front-loaded fee placement
+│   ├── solve/                # k-search (Part 1) + binary-search minima (Part 2)
+│   └── engine.py             # evaluate_offer() — the one entry point
 ├── cases/                   # four example cases (client.json / offer.json / creditor_rules.json)
 │   ├── case1_feasible_even
 │   ├── case2_infeasible_minima
 │   ├── case3_balloon
 │   └── case4_tiers
-├── tests/
-│   ├── test_smoke.py        # scaffolding sanity tests (pass out of the box)
-│   └── test_cases.py        # example expectations — make these pass, then add your own
+├── tests/                    # 46 tests
 ├── run.py                   # python run.py cases/<case>
 └── requirements.txt
 ```
@@ -46,16 +51,12 @@ python run.py cases/case1_feasible_even
 pytest -q
 ```
 
-Out of the box, `tests/test_smoke.py` passes and `tests/test_cases.py` fails —
-the latter is your target. Go beyond those four cases with your own tests.
+All 46 tests pass — the 4 provided cases plus coverage for shapes, floors,
+the ledger simulation, fee placement, and both Part 2 minima. See
+`SOLUTION.md` for what each test file covers.
 
 ## What to submit
 
-Your implementation, your tests, and a short README section describing:
-- your approach and the alternatives you considered,
-- **your interpretation of the payment shapes** (even / staircase / balloon — we
-  left these loosely defined on purpose),
-- assumptions you made, and known edge cases / limitations.
-
-Budget ~5–6 hours. Prefer a correct, well-tested core over breadth. When in
-doubt, write down your assumption and keep going.
+Covered in full in [`SOLUTION.md`](./SOLUTION.md): approach and the
+alternatives considered, the payment-shape interpretation (even / staircase
+/ balloon), assumptions made, and known edge cases / limitations.

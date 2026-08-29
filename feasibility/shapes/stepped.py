@@ -2,7 +2,7 @@
 
 Both shapes keep every position at its natural per-tier floor for as long as
 the segment budget allows, then concentrate the exact-sum remainder into the
-fewest, latest position(s) possible (ARCHITECTURE.md has the full
+fewest, latest position(s) possible (SOLUTION.md has the full
 reasoning, including why this is the cash-flow-dominant construction among
 every valid split for a given k):
 
