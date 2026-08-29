@@ -137,6 +137,31 @@ def test_staircase_prefers_front_loaded_grouping_when_it_is_reachable():
     assert result.payments == [100, 100, 500, 500, 500, 500]
 
 
+def test_staircase_tries_an_alternative_grouping_when_the_first_ones_remainder_does_not_divide_evenly():
+    # Same tiers/cap as above (floors [100,100,200,200,500,500], max_segments=2,
+    # so there's no spare segment budget — whichever grouping is used must
+    # move its whole final group together). offer_total=2202: the
+    # front-loaded grouping (merge tiers 2+3) costs a minimum of 2200,
+    # leaving a remainder of 2 that does NOT divide evenly across its
+    # 4-position final group — naively bumping 2 of those 4 positions by a
+    # cent each would silently exceed the segment cap. Merging tiers 1+2
+    # instead costs 1800, leaving a remainder of 402 that DOES divide evenly
+    # across its 2-position final group (201 each) — a genuinely valid
+    # 2-segment staircase that the construction must find instead of
+    # reporting this k infeasible.
+    rules = _rules(
+        min_payment_cents=100,
+        max_token_pays=100,
+        min_payment_tiers=[(3, 200), (5, 500)],
+        max_segments=2,
+    )
+    result = build_staircase(build_floors(6, rules), 2202, rules)
+    assert result.valid
+    assert result.payments == [200, 200, 200, 200, 701, 701]
+    assert len(set(result.payments)) <= 2
+    assert sum(result.payments) == 2202
+
+
 def test_staircase_front_loads_when_spare_segment_budget_available():
     # No tiers (flat floor), 2 segments allowed: should concentrate the whole
     # remainder into the single trailing payment rather than raising everyone

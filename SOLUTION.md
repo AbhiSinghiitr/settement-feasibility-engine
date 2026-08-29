@@ -89,14 +89,15 @@ fee placement to work with.
 - **Neither flag set (staircase)**: same greedy idea as balloon — stay at
   the true minimum for as long as the segment budget allows — but capped at
   `max_segments` distinct payment levels. Positions are grouped into runs by
-  their natural tier floor; if there are more natural tiers than
-  `max_segments` allows, the excess tail tiers get merged into one raised
-  level (falling back to whichever grouping is cheapest overall, if the
-  greedy grouping alone can't reach `offer_total` — see "Why this is
-  correct" below). If there's spare segment budget left over instead, the
-  single trailing position absorbs the remainder rather than raising the
+  their natural tier floor, and if there's spare segment budget left over,
+  the single trailing position absorbs the remainder rather than raising the
   whole tail run together — this is what makes the staircase front-load as
-  aggressively as the segment cap permits.
+  aggressively as the segment cap permits. If there are more natural tiers
+  than `max_segments` allows, some tiers must merge; every way of grouping
+  them is tried, most front-loaded first, until one both reaches
+  `offer_total` and can be split without exceeding the segment cap — see
+  "Why this is correct" below for why a single "obvious" grouping isn't
+  always enough.
 - **Token pays and tiers interacting with a final balloon payment**: both
   rules are folded into the one floor computation (`shapes/floors.py::build_floors`),
   applied uniformly regardless of whether a position ends up being the final
@@ -139,9 +140,13 @@ fee placement to work with.
   pruning (see the **Architecture** section below for why that's the right
   call at realistic sizes). It would need pruning or a smarter search if a
   creditor's `max_payments` ever ran into the thousands.
-- A rare edge case (a creditor with more pricing tiers than `max_segments`
-  allows) is where the greedy construction isn't provably optimal, though it
-  still always finds a valid schedule — see the closing caveat below.
+- When a creditor has more pricing tiers than `max_segments` allows, the
+  "obvious" grouping (merge the latest tiers together) can sometimes leave a
+  leftover remainder that doesn't divide evenly across the merged group —
+  naively spreading it would silently exceed the segment cap. The
+  construction handles this by trying every way to group the tiers, most
+  front-loaded first, until one both reaches `offer_total` and respects the
+  cap — see the closing note below.
 
 ### Why this is correct
 
@@ -161,12 +166,19 @@ ledger once and seeing how low the balance ever dips downstream. Since
 delaying fee collection can only ever help future dates, never hurt them,
 grabbing the max right now is always the safe — and best — choice.
 
-**If a feasible schedule exists, will we find it?** Yes. For each `k`, we
-build the most forgiving array possible for the account's cash flow — the
-one that uses the least money as early as possible. If even that one can't
-keep the balance non-negative, no other valid array for that `k` could
-either. So checking just that one array per `k` is enough to know whether
-`k` can ever work, and every `k` up to the max allowed gets checked.
+**If a feasible schedule exists, will we find it?** Yes, at two levels.
+Structurally, for a given `k`, the construction doesn't just try one way of
+grouping the creditor's tiers into `max_segments` levels — it tries every
+way, from most to least front-loaded, until one both sums exactly to
+`offer_total` and respects the cap. (An earlier version tried only the
+"obvious" grouping and could wrongly reject a `k` that a different, equally
+valid grouping would have made to work — fixed by searching all of them.)
+Then, cash-flow-wise: whichever grouping is found builds the most forgiving
+array possible for the account's cash flow — the one that uses the least
+money as early as possible. If even that can't keep the balance
+non-negative, no other valid array for that `k` could either. So checking
+one array per `k` is enough to know whether `k` can ever work, and every
+`k` up to the max allowed gets checked.
 
 **Are the minimum lump sum and monthly increase actually the minimum?**
 Yes, via binary search — which works here because adding money never hurts.
@@ -177,13 +189,16 @@ binary search needs, and it lands on the exact cent where the flip happens,
 not an estimate. Same as above, this is just repeated calls to a pure
 feasibility check, so it's deterministic too.
 
-**One honest caveat.** In the rare edge case flagged above — a creditor
-with more pricing tiers than `max_segments` allows, *and* an `offer_total`
-that lands in a narrow band where the greedy grouping alone can't reach it
-— the construction falls back to whichever grouping is cheapest overall.
-That fallback always produces *a* valid, working schedule, just not
-guaranteed to be the most front-loaded one possible in that one narrow
-scenario. Doesn't come up in any of the provided test cases.
+**One honest caveat.** When a creditor has more tiers than `max_segments`
+allows, the search tries every way to group them, most front-loaded first,
+and stops at the first one that reaches `offer_total` exactly without
+exceeding the cap — so it's exhaustive, not a guess. What isn't formally
+proven here is that the *first* grouping to succeed is always the most
+front-loaded one *among every alternative that would also have worked* —
+that's true whenever the top-priority grouping itself succeeds (the common
+case, and every provided test case), but for the rarer situation where it
+has to fall through to a later, less-preferred grouping, front-loading
+optimality is a well-justified design intent rather than a proven theorem.
 
 ### Tests
 
@@ -219,7 +234,8 @@ extra money that would fix it.
    much fee as possible on the earliest date, then the next, and so on,
    without ever risking a later date going negative.
 4. **Try every `k`** from 1 up to the max allowed, and keep whichever one
-   collects the fee earliest.
+   finishes collecting the fee on the earliest possible date (ties broken
+   toward the smallest `k`).
 
 If step 4 never finds a working option, binary-search for the smallest lump
 sum (or smallest monthly increase) that would make one exist — see "Part 2

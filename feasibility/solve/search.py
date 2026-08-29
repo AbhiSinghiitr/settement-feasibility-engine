@@ -49,6 +49,16 @@ def _k_upper(rules: CreditorRules, all_cadence: list[date]) -> int:
     return min(rules.max_payments, rules.max_terms, len(all_cadence))
 
 
+def _fee_finish_index(placement: dict[date, int], all_cadence: list[date]) -> int:
+    """Index into all_cadence of the last date any fee was collected on;
+    -1 if no fee was collected anywhere (e.g. program_fee_pct == 0)."""
+    finish = -1
+    for i, d in enumerate(all_cadence):
+        if placement.get(d, 0):
+            finish = i
+    return finish
+
+
 def find_best_schedule(
     client: Client,
     offer: Offer,
@@ -56,8 +66,8 @@ def find_best_schedule(
     first_payment_date: date,
     extra_credits: dict[date, int] | None = None,
 ) -> SolvedSchedule | None:
-    """Search k in [1, k_upper]; keep the one with the lexicographically most
-    front-loaded fee vector (ties broken toward the smallest k)."""
+    """Search k in [1, k_upper]; keep the one that finishes collecting the
+    fee on the earliest possible date (ties broken toward the smallest k)."""
     horizon = client.last_draft_date
     offer_total = offer_total_cents(offer)
     fee_total = program_fee_cents(offer, rules)
@@ -71,7 +81,7 @@ def find_best_schedule(
     floors_upper = build_floors(k_upper, rules)
 
     best: SolvedSchedule | None = None
-    best_fee_vector: tuple[int, ...] | None = None
+    best_finish_index: int | None = None
 
     for k in range(1, k_upper + 1):
         result = _build_payments(floors_upper[:k], offer_total, rules)
@@ -87,11 +97,11 @@ def find_best_schedule(
         if placement is None:
             continue
 
-        fee_vector = tuple(placement.get(d, 0) for d in all_cadence)
-        if best_fee_vector is None or fee_vector > best_fee_vector:
+        finish_index = _fee_finish_index(placement, all_cadence)
+        if best_finish_index is None or finish_index < best_finish_index:
             _, balances = simulate(client, extra_credits, creditor_payments, bank_fees, placement)
             best = SolvedSchedule(shape, k, payment_dates, result.payments, placement, bank_fees, balances)
-            best_fee_vector = fee_vector
+            best_finish_index = finish_index
 
     return best
 

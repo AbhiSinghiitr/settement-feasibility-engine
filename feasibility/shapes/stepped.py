@@ -1,17 +1,21 @@
 """Staircase and balloon: one construction, two segment-cap values.
 
-Both shapes keep every position at its natural per-tier floor for as long as
-the segment budget allows, then concentrate the exact-sum remainder into the
-fewest, latest position(s) possible (SOLUTION.md has the full
-reasoning, including why this is the cash-flow-dominant construction among
-every valid split for a given k):
+Both start from the same place — every position at its own natural per-tier
+floor, remainder absorbed at the end (that's the balloon case, cap=None,
+unconditionally). Staircase is the same thing capped at `max_segments`
+distinct levels:
 
-- staircase: cap = rules.max_segments (a hard limit on distinct payment levels)
-- balloon:   cap = None (unbounded — every position but the last sits at its
-  own individual floor, and the final position absorbs the remainder)
+- if the creditor's tiers already fit the cap, nothing changes — same
+  balloon-style construction, just fit directly.
+- if there are more tiers than the cap allows, some have to merge; every way
+  of merging them is tried, most front-loaded first, until one both reaches
+  offer_total and fits the cap exactly (SOLUTION.md has the full reasoning
+  for why the "obvious" merge alone isn't always enough).
 """
 
 from __future__ import annotations
+
+from itertools import combinations
 
 from feasibility.models import CreditorRules
 from feasibility.shapes.validate import ShapeResult, validate_payments
@@ -40,113 +44,84 @@ def _run_cost(runs: list[tuple[int, int, int]]) -> int:
     return sum(level * (end - start) for start, end, level in runs)
 
 
-def _merge_tail(runs: list[tuple[int, int, int]], cap: int) -> list[tuple[int, int, int]]:
-    """Keep the first cap-1 runs distinct; merge everything from the cap-th
-    run onward into one tail run at the toughest floor in that range. The
-    most front-loaded grouping *when it's achievable* — see
-    _min_cost_partition for what happens when it isn't.
-    """
-    head = runs[: cap - 1]
-    tail_start = head[-1][1] if head else 0
-    tail_end = runs[-1][1]
-    tail_level = runs[-1][2]
-    return head + [(tail_start, tail_end, tail_level)]
+def _partitions(runs: list[tuple[int, int, int]], groups: int):
+    """Every way to merge `runs` into exactly `groups` contiguous groups,
+    each merged group taking its last run's floor (floors only increase, so
+    that's always the toughest requirement in the group).
 
-
-def _min_cost_partition(runs: list[tuple[int, int, int]], cap: int) -> list[tuple[int, int, int]]:
-    """The *cheapest* way to partition `runs` into at most `cap` contiguous
-    groups — i.e. the true minimum total this k can possibly reach under the
-    segment cap, over every valid grouping, not just the front-loaded one.
-
-    Since floors only increase, a group's level is always its last run's
-    floor, so this is the classic "partition a sorted sequence into <= cap
-    contiguous segments minimizing sum(segment_max * segment_size)" — solved
-    by DP over (how many runs considered, how many groups used so far).
-    Only ever called as a fallback (see _build_stepped) when the
-    front-loaded grouping alone can't reach offer_total, to guarantee a
-    valid shape is found whenever one exists at all for this k.
+    Yielded from most to least front-loaded: combinations() enumerates
+    cut-points in increasing order, and a low cut-point keeps the earliest
+    runs distinct for as long as possible (merging only the later ones) —
+    exactly the preference order we want to try things in.
     """
     t = len(runs)
-    counts = [end - start for start, end, _ in runs]
-    levels = [level for _, _, level in runs]
-    prefix = [0] * (t + 1)
-    for i in range(t):
-        prefix[i + 1] = prefix[i] + counts[i]
+    for cuts in combinations(range(1, t), groups - 1):
+        bounds = (0,) + cuts + (t,)
+        yield [
+            (runs[bounds[i]][0], runs[bounds[i + 1] - 1][1], runs[bounds[i + 1] - 1][2])
+            for i in range(groups)
+        ]
 
-    inf = float("inf")
-    dp = [[inf] * (t + 1) for _ in range(cap + 1)]
-    parent = [[-1] * (t + 1) for _ in range(cap + 1)]
-    dp[0][0] = 0
-    for groups_used in range(1, cap + 1):
-        for i in range(groups_used, t + 1):
-            for p in range(groups_used - 1, i):
-                prev = dp[groups_used - 1][p]
-                if prev == inf:
-                    continue
-                cost = prev + levels[i - 1] * (prefix[i] - prefix[p])
-                if cost < dp[groups_used][i]:
-                    dp[groups_used][i] = cost
-                    parent[groups_used][i] = p
 
-    best_groups = min(range(1, cap + 1), key=lambda j: dp[j][t])
-    boundaries: list[tuple[int, int]] = []
-    j, i = best_groups, t
-    while j > 0:
-        p = parent[j][i]
-        boundaries.append((p, i))
-        i, j = p, j - 1
-    boundaries.reverse()
-    return [(runs[p][0], runs[i - 1][1], runs[i - 1][2]) for p, i in boundaries]
+def _fit_exactly(
+    partition: list[tuple[int, int, int]], offer_total: int, cap: int | None
+) -> list[tuple[int, int, int]] | None:
+    """If `partition` can be adjusted to sum to exactly offer_total without
+    exceeding `cap` distinct levels, return the adjusted run list; else None.
+    """
+    remainder = offer_total - _run_cost(partition)
+    if remainder < 0:
+        return None
+    if remainder == 0:
+        return partition
+
+    spare = None if cap is None else cap - len(partition)
+    last_start, last_end, last_level = partition[-1]
+
+    if spare is None or spare >= 1:
+        # Front-load: absorb the whole remainder into a single trailing
+        # position, leaving the rest of the group at its floor.
+        if last_end - last_start > 1:
+            return partition[:-1] + [
+                (last_start, last_end - 1, last_level),
+                (last_end - 1, last_end, last_level + remainder),
+            ]
+        return partition[:-1] + [(last_start, last_end, last_level + remainder)]
+
+    # No spare distinct level: the whole final group must move together,
+    # uniformly — only possible if the remainder divides evenly across it.
+    count = last_end - last_start
+    if remainder % count != 0:
+        return None
+    return partition[:-1] + [(last_start, last_end, last_level + remainder // count)]
 
 
 def _build_stepped(floors: list[int], offer_total: int, cap: int | None) -> ShapeResult:
     k = len(floors)
-    runs = _grouped_runs(floors)
+    natural_runs = _grouped_runs(floors)
+    t = len(natural_runs)
 
-    if cap is not None and len(runs) > cap:
-        front_loaded = _merge_tail(runs, cap)
-        if offer_total >= _run_cost(front_loaded):
-            runs = front_loaded
-        else:
-            # The most front-loaded grouping can't reach offer_total on its
-            # own; fall back to the total-minimizing partition, which is
-            # achievable whenever *any* <=cap grouping is (see docstring).
-            runs = _min_cost_partition(runs, cap)
-
-    levels = [r[2] for r in runs]
-    counts = [r[1] - r[0] for r in runs]
-    minimal_total = sum(l * c for l, c in zip(levels, counts))
-    remainder = offer_total - minimal_total
-    if remainder < 0:
+    # Balloon (cap=None), and the common staircase case: the creditor's
+    # segment budget already covers every tier it defined, so every
+    # position can sit in a group of its own natural size — no merging
+    # needed, just fit the remainder onto the natural groups directly.
+    if cap is None or t <= cap:
+        fitted = _fit_exactly(natural_runs, offer_total, cap)
+        if fitted is not None:
+            return validate_payments(_flatten(fitted, k), offer_total, floors, cap)
         return ShapeResult([], False, "offer_total below minimal total for this k")
 
-    if remainder == 0:
-        return validate_payments(_flatten(runs, k), offer_total, floors, cap)
+    # More natural tiers than the segment budget allows: some must merge.
+    # Try every way to do it, most front-loaded first, until one both
+    # reaches offer_total and fits exactly within the cap — see SOLUTION.md
+    # for why trying just the "obvious" single grouping isn't always enough.
+    for groups in range(cap, 0, -1):
+        for partition in _partitions(natural_runs, groups):
+            fitted = _fit_exactly(partition, offer_total, cap)
+            if fitted is not None:
+                return validate_payments(_flatten(fitted, k), offer_total, floors, cap)
 
-    spare = None if cap is None else cap - len(runs)
-    last_start, last_end, last_level = runs[-1]
-
-    if spare is None or spare >= 1:
-        # Front-load: absorb the whole remainder into a single trailing
-        # position, leaving the rest of the run at its natural floor.
-        if last_end - last_start > 1:
-            runs[-1:] = [
-                (last_start, last_end - 1, last_level),
-                (last_end - 1, last_end, last_level + remainder),
-            ]
-        else:
-            runs[-1] = (last_start, last_end, last_level + remainder)
-        return validate_payments(_flatten(runs, k), offer_total, floors, cap)
-
-    # No spare distinct level: raise the whole final run together, spreading
-    # any leftover cents onto its latest positions.
-    count = last_end - last_start
-    add_base, add_rem = divmod(remainder, count)
-    runs[-1] = (last_start, last_end, last_level + add_base)
-    payments = _flatten(runs, k)
-    for i in range(k - add_rem, k):
-        payments[i] += 1
-    return validate_payments(payments, offer_total, floors, cap)
+    return ShapeResult([], False, "offer_total below minimal total for this k")
 
 
 def build_staircase(floors: list[int], offer_total: int, rules: CreditorRules) -> ShapeResult:
