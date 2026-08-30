@@ -309,8 +309,3 @@ binary search — no separate feasibility algorithm exists.
   always small in practice (tens, not thousands), so trying every `k` is
   fast and trivially easy to verify — no need for anything cleverer.
 
-### Speed
-
-Roughly `O(k_max × number of ledger dates)` for the whole search — the cost
-is one ledger replay per candidate `k`. Never a real bottleneck at the
-sizes this problem actually has.
