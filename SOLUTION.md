@@ -30,38 +30,15 @@ caught before writing code, is in the **Architecture** section below.
 
 Alternatives considered and rejected:
 - **A smarter (DP / pruned) search over `k`** instead of trying every value
-  1..k_upper — rejected because `k_upper` is small in every realistic case
-  (a multi-year plan has on the order of tens of payments), so brute force
-  is both fast enough and much easier to verify correct than a cleverer
-  formulation would be.
+  1..k_upper — rejected because `k_upper` is small in every realistic case,
+  so brute force is fast enough and far easier to verify correct.
 - **Re-simulating the ledger once per candidate date** in the fee-placement
-  greedy (the first working version did this — `O(D²log D)`) — replaced with
-  one simulation pass plus a suffix-min precomputation (`O(D log D)`), since
-  "how much fee can I take here" turned out to depend only on a suffix
-  minimum that doesn't change shape as the greedy proceeds, only shifts by a
-  constant.
-- **Recomputing each `k`'s floor array from scratch** inside the shape
-  constructors — since a position's floor never actually depends on `k`,
-  the original per-`k` `build_floors(k, rules)` call redid the same work up
-  to `k` times across the search. Replaced with computing the floor array
-  once up to `k_upper` and slicing a `[:k]` prefix per `k`.
-- **Recomputing every rule at every position** inside `build_floors` itself
-  (`O(k · T)` for `T` tiers — each position rescanned the whole tier list)
-  — replaced with writing each breakpoint's bump (a tier's `from_position`,
-  or the token-pay cutoff) directly into the output list at its own index,
-  then one forward pass carrying the running floor across the flat gaps
-  between them (`O(k + T)`). No intermediate dict — the output list doubles
-  as the breakpoint scratch space. Exercised by
-  `test_build_floors_tricky_multi_tier_case` (unsorted tiers, two tiers
-  landing on the same position, one tier past `k`).
-- **Closed-form formulas for the front-loaded fee split** instead of a
-  greedy walk — rejected because the greedy is provably optimal and much
-  easier to reason about than deriving a formula that has to account for
-  arbitrary ledger activity (fixed debits, uneven draft cadence) in between.
+  greedy — rejected as needlessly slow (`O(D²log D)`); replaced with one
+  simulation pass plus a suffix-min precomputation (`O(D log D)`).
 - **Splitting the staircase remainder evenly across all spare segments**
-  instead of concentrating it into one trailing position — the initial
-  design did this and it under-front-loads (caught by hand-tracing the
-  spec's own worked example before writing any implementation code).
+  instead of concentrating it into one trailing position — rejected because
+  it under-front-loads (caught by hand-tracing the spec's own worked
+  example before writing any implementation code).
 
 ### Shape interpretation (even / staircase / balloon)
 
